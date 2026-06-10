@@ -1,18 +1,20 @@
 {
   "name": "fp-sbd-26",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun run index.ts",
-    "start": "bun run index.ts",
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts",
     "prisma:generate": "bunx prisma generate",
     "prisma:validate": "bunx prisma validate",
     "prisma:migrate:diff": "bunx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script",
     "prisma:migrate:dev": "bunx prisma migrate dev"
   },
   "dependencies": {
-    "@prisma/client": "^7.8.0"
+    "@prisma/adapter-mariadb": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "mariadb": "^3.5.3"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -36,7 +36,8 @@ bun run dev
 
 ## Struktur
 
-- `index.ts`: UI terminal awal dengan opsi `Register`, `Login`, dan `Quit`
+- `src/index.ts`: entrypoint UI terminal dengan `Register`, `Login`, dan dashboard per role
+- `src/lib`: helper Prisma, input, dan terminal UI
 - `prisma/schema.prisma`: schema database MySQL
 - `prisma.config.ts`: konfigurasi Prisma 7 untuk schema, migrations, dan `DATABASE_URL`
 - `prisma/migrations`: migration SQL awal dari schema Prisma
