@@ -1,0 +1,80 @@
+erDiagram
+    direction LR
+
+    USERS {
+        int id PK
+        string name
+        string email
+        string password
+        enum role "BUYER|SELLER|COURIER"
+        datetime created_at
+        datetime updated_at
+    }
+
+    ADDRESSES {
+        int id PK
+        int user_id FK
+        string label
+        string recipient_name
+        string phone_number
+        text full_address
+        string city
+        string province
+        string postal_code
+        boolean is_primary
+        datetime created_at
+        datetime updated_at
+    }
+
+    PRODUCTS {
+        int id PK
+        string name
+        text description
+        string category
+        string image_url
+        enum status "ACTIVE|INACTIVE"
+        datetime created_at
+        datetime updated_at
+    }
+
+    LISTINGS {
+        int id PK
+        int seller_id FK
+        int product_id FK
+        decimal price
+        int stock
+        enum status "ACTIVE|INACTIVE"
+        datetime created_at
+        datetime updated_at
+    }
+
+    ORDERS {
+        int id PK
+        int buyer_id FK
+        int courier_id FK
+        int shipping_address_id FK
+        enum status "PENDING|PAID|SHIPPED|COMPLETED|CANCELLED"
+        text notes
+        decimal total_amount
+        datetime created_at
+        datetime updated_at
+    }
+
+    ORDER_ITEMS {
+        int id PK
+        int order_id FK
+        int listing_id FK
+        int quantity
+        decimal unit_price
+        decimal subtotal
+        datetime created_at
+    }
+
+    USERS ||--o{ ADDRESSES : "has"
+    USERS ||--o{ LISTINGS : "sells"
+    PRODUCTS ||--o{ LISTINGS : "listed_as"
+    USERS ||--o{ ORDERS : "places"
+    USERS ||--o{ ORDERS : "delivers"
+    ADDRESSES ||--o{ ORDERS : "ships_to"
+    ORDERS ||--o{ ORDER_ITEMS : "contains"
+    LISTINGS ||--o{ ORDER_ITEMS : "ordered_as"

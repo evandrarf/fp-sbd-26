@@ -1,0 +1,24 @@
+{
+  "name": "fp-sbd-26",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run index.ts",
+    "start": "bun run index.ts",
+    "prisma:generate": "bunx prisma generate",
+    "prisma:validate": "bunx prisma validate",
+    "prisma:migrate:diff": "bunx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script",
+    "prisma:migrate:dev": "bunx prisma migrate dev"
+  },
+  "dependencies": {
+    "@prisma/client": "^7.8.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^25.9.2",
+    "dotenv": "^17.4.2",
+    "prisma": "^7.8.0",
+    "typescript": "^5.9.2"
+  }
+}

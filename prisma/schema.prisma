@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum UserRole {
+  BUYER
+  SELLER
+  COURIER
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ListingStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  SHIPPED
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id                Int       @id @default(autoincrement())
+  name              String
+  email             String    @unique
+  password          String
+  role              UserRole
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  addresses         Address[]
+  sellerListings    Listing[] @relation("SellerListings")
+  buyerOrders       Order[]   @relation("BuyerOrders")
+  courierOrders     Order[]   @relation("CourierOrders")
+}
+
+model Address {
+  id            Int      @id @default(autoincrement())
+  userId        Int
+  label         String
+  recipientName String
+  phoneNumber   String
+  fullAddress   String   @db.Text
+  city          String
+  province      String
+  postalCode    String
+  isPrimary     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders        Order[]
+
+  @@index([userId])
+}
+
+model Product {
+  id          Int           @id @default(autoincrement())
+  name        String
+  description String?       @db.Text
+  category    String
+  imageUrl    String?
+  status      ProductStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  listings    Listing[]
+}
+
+model Listing {
+  id          Int           @id @default(autoincrement())
+  sellerId    Int
+  productId   Int
+  price       Decimal       @db.Decimal(10, 2)
+  stock       Int
+  status      ListingStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  seller      User          @relation("SellerListings", fields: [sellerId], references: [id], onDelete: Cascade)
+  product     Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems  OrderItem[]
+
+  @@index([sellerId])
+  @@index([productId])
+}
+
+model Order {
+  id                Int         @id @default(autoincrement())
+  buyerId           Int
+  courierId         Int?
+  shippingAddressId Int
+  status            OrderStatus @default(PENDING)
+  notes             String?     @db.Text
+  totalAmount       Decimal     @db.Decimal(10, 2)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  buyer             User        @relation("BuyerOrders", fields: [buyerId], references: [id], onDelete: Cascade)
+  courier           User?       @relation("CourierOrders", fields: [courierId], references: [id], onDelete: SetNull)
+  shippingAddress   Address     @relation(fields: [shippingAddressId], references: [id], onDelete: Restrict)
+  items             OrderItem[]
+
+  @@index([buyerId])
+  @@index([courierId])
+  @@index([shippingAddressId])
+}
+
+model OrderItem {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  listingId Int
+  quantity  Int
+  unitPrice Decimal  @db.Decimal(10, 2)
+  subtotal  Decimal  @db.Decimal(10, 2)
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([listingId])
+}
