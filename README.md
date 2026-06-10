@@ -36,8 +36,13 @@ bun run dev
 
 ## Struktur
 
-- `src/index.ts`: entrypoint UI terminal dengan `Register`, `Login`, dan dashboard per role
-- `src/lib`: helper Prisma, input, dan terminal UI
+- `src/index.ts`: orchestrator aplikasi terminal
+- `src/features/auth`: alur register dan login
+- `src/features/dashboard`: dashboard per role setelah login
+- `src/features/home`: tampilan menu utama
+- `src/shared/db`: Prisma client dan database guard
+- `src/shared/terminal`: helper input dan rendering UI terminal
+- `src/shared/auth` dan `src/shared/types`: role metadata dan shared types
 - `prisma/schema.prisma`: schema database MySQL
 - `prisma.config.ts`: konfigurasi Prisma 7 untuk schema, migrations, dan `DATABASE_URL`
 - `prisma/migrations`: migration SQL awal dari schema Prisma

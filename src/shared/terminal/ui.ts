@@ -1,6 +1,6 @@
 import { stdout } from "node:process";
 
-type BoxTone = "pink" | "cyan" | "green" | "yellow" | "red" | "blue" | "muted";
+export type BoxTone = "pink" | "cyan" | "green" | "yellow" | "red" | "blue" | "muted";
 
 const ANSI = {
   reset: "\x1b[0m",
