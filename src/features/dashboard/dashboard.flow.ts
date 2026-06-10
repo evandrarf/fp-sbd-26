@@ -1,5 +1,6 @@
 import { UserRole } from "@prisma/client";
 
+import { productFlow } from "../product/product.flow";
 import { formatRole, roleSummaryHint } from "../../shared/auth/roles";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { prisma } from "../../shared/db/prisma";
@@ -12,25 +13,36 @@ type DashboardStats = {
   sellerListings: number;
   buyerOrders: number;
   courierOrders: number;
+  products: number;
 };
 
 async function loadDashboardStats(user: SessionUser) {
   return withDatabaseGuard(async () => {
-    const me = await prisma.user.findUnique({
-      where: { id: user.id },
-      select: {
-        _count: {
-          select: {
-            addresses: true,
-            sellerListings: true,
-            buyerOrders: true,
-            courierOrders: true,
+    const [me, products] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: user.id },
+        select: {
+          _count: {
+            select: {
+              addresses: true,
+              sellerListings: true,
+              buyerOrders: true,
+              courierOrders: true,
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.product.count(),
+    ]);
 
-    return me?._count ?? null;
+    if (!me) {
+      return null;
+    }
+
+    return {
+      ...me._count,
+      products,
+    };
   });
 }
 
@@ -47,6 +59,7 @@ function statsLinesByRole(role: UserRole, stats: DashboardStats) {
     return [
       `Total listing aktif/nonaktif : ${stats.sellerListings}`,
       `Alamat toko tersimpan        : ${stats.addresses}`,
+      `Total produk katalog         : ${stats.products}`,
       roleSummaryHint(role),
     ];
   }
@@ -78,7 +91,12 @@ function dashboardCopy(user: SessionUser, stats: DashboardStats | null | typeof 
   lines.push("");
   lines.push(menuOption("1", "Refresh dashboard", "Ambil data terbaru dari database.", "green"));
   lines.push(menuOption("2", "Lihat profil", "Tampilkan identitas akun saat ini.", "blue"));
-  lines.push(menuOption("3", "Logout", "Kembali ke menu utama.", "red"));
+  if (user.role === "SELLER") {
+    lines.push(menuOption("3", "Kelola produk", "Tambah, lihat, ubah, dan hapus produk katalog.", "cyan"));
+    lines.push(menuOption("4", "Logout", "Kembali ke menu utama.", "red"));
+  } else {
+    lines.push(menuOption("3", "Logout", "Kembali ke menu utama.", "red"));
+  }
 
   return lines;
 }
@@ -125,7 +143,20 @@ export async function dashboardFlow(user: SessionUser) {
         await showProfile(user);
         break;
       case "3":
-        active = false;
+        if (user.role === "SELLER") {
+          await productFlow();
+        } else {
+          active = false;
+        }
+        break;
+      case "4":
+        if (user.role === "SELLER") {
+          active = false;
+          break;
+        }
+
+        printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
+        await pause();
         break;
       default:
         printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
