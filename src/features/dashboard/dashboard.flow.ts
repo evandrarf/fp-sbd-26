@@ -1,6 +1,9 @@
 import { UserRole } from "@prisma/client";
 
 import { productFlow } from "../product/product.flow";
+import { orderFlow } from "../order/order.flow";
+import { listingFlow } from "../listing/listing.flow";
+import { addressFlow } from "../address/address.flow";
 import { formatRole, roleSummaryHint } from "../../shared/auth/roles";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { prisma } from "../../shared/db/prisma";
@@ -93,7 +96,12 @@ function dashboardCopy(user: SessionUser, stats: DashboardStats | null | typeof 
   lines.push(menuOption("2", "Lihat profil", "Tampilkan identitas akun saat ini.", "blue"));
   if (user.role === "SELLER") {
     lines.push(menuOption("3", "Kelola produk", "Tambah, lihat, ubah, dan hapus produk katalog.", "cyan"));
-    lines.push(menuOption("4", "Logout", "Kembali ke menu utama.", "red"));
+    lines.push(menuOption("4", "Kelola Listing Jastip Toko", "Atur harga penawaran dan update stok jastip Anda.", "pink"));
+    lines.push(menuOption("5", "Logout", "Kembali ke menu utama.", "red"));
+  } else if (user.role === "BUYER") {
+    lines.push(menuOption("3", "Transaksi & Beli Jastip", "Mulai checkout barang titipan atau cek pesanan.", "cyan"));
+    lines.push(menuOption("4", "Kelola Alamat Saya", "Tambah atau lihat daftar alamat pengiriman Anda.", "pink"));
+    lines.push(menuOption("5", "Logout", "Kembali ke menu utama.", "red"));
   } else {
     lines.push(menuOption("3", "Logout", "Kembali ke menu utama.", "red"));
   }
@@ -145,14 +153,26 @@ export async function dashboardFlow(user: SessionUser) {
       case "3":
         if (user.role === "SELLER") {
           await productFlow();
+        } else if (user.role === "BUYER") {
+          await orderFlow(user);
         } else {
           active = false;
         }
         break;
       case "4":
         if (user.role === "SELLER") {
-          active = false;
-          break;
+          await listingFlow(user);
+        } else if (user.role === "BUYER") {
+          await addressFlow(user);
+        } else {
+          printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
+          await pause();
+        }
+        break;
+      case "5":
+        if (user.role === "SELLER" || user.role === "BUYER") {
+            active = false;
+            break;
         }
 
         printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
