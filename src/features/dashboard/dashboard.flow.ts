@@ -5,6 +5,7 @@ import { orderFlow } from "../order/order.flow";
 import { listingFlow } from "../listing/listing.flow";
 import { courierFlow } from "../courier/courier.flow";
 import { addressFlow } from "../address/address.flow";
+import { feedbackFlow } from "../feedback/feedback.flow"; 
 import { formatRole, roleSummaryHint } from "../../shared/auth/roles";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { prisma } from "../../shared/db/prisma";
@@ -95,14 +96,17 @@ function dashboardCopy(user: SessionUser, stats: DashboardStats | null | typeof 
   lines.push("");
   lines.push(menuOption("1", "Refresh dashboard", "Ambil data terbaru dari database.", "green"));
   lines.push(menuOption("2", "Lihat profil", "Tampilkan identitas akun saat ini.", "blue"));
+  
   if (user.role === "SELLER") {
     lines.push(menuOption("3", "Kelola produk", "Tambah, lihat, ubah, dan hapus produk katalog.", "cyan"));
     lines.push(menuOption("4", "Kelola Listing Jastip Toko", "Atur harga penawaran dan update stok jastip Anda.", "pink"));
-    lines.push(menuOption("5", "Logout", "Kembali ke menu utama.", "red"));
+    lines.push(menuOption("5", "Feedback Jastip", "Lihat ulasan pembeli dan berikan balasan.", "yellow"));
+    lines.push(menuOption("6", "Logout", "Kembali ke menu utama.", "red"));
   } else if (user.role === "BUYER") {
     lines.push(menuOption("3", "Transaksi & Beli Jastip", "Mulai checkout barang titipan atau cek pesanan.", "cyan"));
     lines.push(menuOption("4", "Kelola Alamat Saya", "Tambah atau lihat daftar alamat pengiriman Anda.", "pink"));
-    lines.push(menuOption("5", "Logout", "Kembali ke menu utama.", "red"));
+    lines.push(menuOption("5", "Beri Ulasan Jastip", "Lihat feed atau beri rating pada pesananmu.", "yellow")); 
+    lines.push(menuOption("6", "Logout", "Kembali ke menu utama.", "red")); 
   } else if (user.role === "COURIER") {
     lines.push(menuOption("3", "Kelola Pengiriman Kurir", "Ambil antrean pesanan jastip dan update status kirim.", "yellow"));
     lines.push(menuOption("4", "Logout", "Kembali ke menu utama.", "red"));
@@ -171,7 +175,7 @@ export async function dashboardFlow(user: SessionUser) {
         } else if (user.role === "BUYER") {
           await addressFlow(user);
         } else if (user.role === "COURIER") {
-          active = false;
+          active = false; // Kurir Logout
         } else {
           printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
           await pause();
@@ -179,10 +183,17 @@ export async function dashboardFlow(user: SessionUser) {
         break;
       case "5":
         if (user.role === "SELLER" || user.role === "BUYER") {
-            active = false;
+            await feedbackFlow(user); // Masuk ke menu Feedback
             break;
         }
-
+        printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
+        await pause();
+        break;
+      case "6": 
+        if (user.role === "SELLER" || user.role === "BUYER") {
+           active = false; // Seller/Buyer Logout
+           break;
+        }
         printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
         await pause();
         break;

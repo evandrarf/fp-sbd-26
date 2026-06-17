@@ -135,6 +135,7 @@ model Review {
   buyerId   Int
   rating    Int
   comment   String?  @db.Text
+  sellerReply String?  @db.Text
   createdAt DateTime @default(now())
 
   order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
