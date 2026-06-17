@@ -3,6 +3,7 @@ import { UserRole } from "@prisma/client";
 import { productFlow } from "../product/product.flow";
 import { orderFlow } from "../order/order.flow";
 import { listingFlow } from "../listing/listing.flow";
+import { courierFlow } from "../courier/courier.flow";
 import { addressFlow } from "../address/address.flow";
 import { formatRole, roleSummaryHint } from "../../shared/auth/roles";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
@@ -102,6 +103,9 @@ function dashboardCopy(user: SessionUser, stats: DashboardStats | null | typeof 
     lines.push(menuOption("3", "Transaksi & Beli Jastip", "Mulai checkout barang titipan atau cek pesanan.", "cyan"));
     lines.push(menuOption("4", "Kelola Alamat Saya", "Tambah atau lihat daftar alamat pengiriman Anda.", "pink"));
     lines.push(menuOption("5", "Logout", "Kembali ke menu utama.", "red"));
+  } else if (user.role === "COURIER") {
+    lines.push(menuOption("3", "Kelola Pengiriman Kurir", "Ambil antrean pesanan jastip dan update status kirim.", "yellow"));
+    lines.push(menuOption("4", "Logout", "Kembali ke menu utama.", "red"));
   } else {
     lines.push(menuOption("3", "Logout", "Kembali ke menu utama.", "red"));
   }
@@ -155,6 +159,8 @@ export async function dashboardFlow(user: SessionUser) {
           await productFlow();
         } else if (user.role === "BUYER") {
           await orderFlow(user);
+        } else if (user.role === "COURIER") {
+          await courierFlow(user);
         } else {
           active = false;
         }
@@ -164,6 +170,8 @@ export async function dashboardFlow(user: SessionUser) {
           await listingFlow(user);
         } else if (user.role === "BUYER") {
           await addressFlow(user);
+        } else if (user.role === "COURIER") {
+          active = false;
         } else {
           printScreen([hero(), statusBox("Pilihan dashboard tidak valid.", "red")]);
           await pause();
