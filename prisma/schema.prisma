@@ -42,6 +42,7 @@ model User {
   sellerListings    Listing[] @relation("SellerListings")
   buyerOrders       Order[]   @relation("BuyerOrders")
   courierOrders     Order[]   @relation("CourierOrders")
+  reviews Review[]
 }
 
 model Address {
@@ -110,6 +111,7 @@ model Order {
   @@index([buyerId])
   @@index([courierId])
   @@index([shippingAddressId])
+  review  Review?
 }
 
 model OrderItem {
@@ -125,4 +127,18 @@ model OrderItem {
 
   @@index([orderId])
   @@index([listingId])
+}
+
+model Review {
+  id        Int      @id @default(autoincrement())
+  orderId   Int      @unique
+  buyerId   Int
+  rating    Int
+  comment   String?  @db.Text
+  createdAt DateTime @default(now())
+
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  buyer     User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+
+  @@index([buyerId])
 }
