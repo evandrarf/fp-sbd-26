@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { prisma } from "../../shared/db/prisma";
 import { pause, prompt, promptRequired } from "../../shared/terminal/input";
@@ -574,4 +573,3 @@ export async function feedbackFlow() {
     }
   }
 }
->>>>>>> 46f56b86a616bd75c8391caf035124be12076ef3
