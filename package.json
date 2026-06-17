@@ -14,7 +14,8 @@
   "dependencies": {
     "@prisma/adapter-mariadb": "^7.8.0",
     "@prisma/client": "^7.8.0",
-    "mariadb": "^3.5.3"
+    "mariadb": "^3.5.3",
+    "mongodb": "^7.3.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

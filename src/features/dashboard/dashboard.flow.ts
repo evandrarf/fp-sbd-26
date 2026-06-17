@@ -1,4 +1,4 @@
-import { UserRole } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
 
 import { productFlow } from "../product/product.flow";
 import { orderFlow } from "../order/order.flow";
@@ -8,6 +8,7 @@ import { addressFlow } from "../address/address.flow";
 import { feedbackFlow } from "../feedback/feedback.flow"; 
 import { formatRole, roleSummaryHint } from "../../shared/auth/roles";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
+import { queryFirst, toNumber } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { pause, prompt } from "../../shared/terminal/input";
 import { box, color, divider, hero, menuOption, printScreen, roleBadge, statusBox } from "../../shared/terminal/ui";
@@ -21,32 +22,41 @@ type DashboardStats = {
   products: number;
 };
 
+type DashboardStatsRow = {
+  addresses: number | string | bigint;
+  sellerListings: number | string | bigint;
+  buyerOrders: number | string | bigint;
+  courierOrders: number | string | bigint;
+  products: number | string | bigint;
+};
+
 async function loadDashboardStats(user: SessionUser) {
   return withDatabaseGuard(async () => {
-    const [me, products] = await Promise.all([
-      prisma.user.findUnique({
-        where: { id: user.id },
-        select: {
-          _count: {
-            select: {
-              addresses: true,
-              sellerListings: true,
-              buyerOrders: true,
-              courierOrders: true,
-            },
-          },
-        },
-      }),
-      prisma.product.count(),
-    ]);
+    const me = await queryFirst<DashboardStatsRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          (SELECT COUNT(*) FROM \`Address\` WHERE userId = u.id) AS addresses,
+          (SELECT COUNT(*) FROM \`Listing\` WHERE sellerId = u.id) AS sellerListings,
+          (SELECT COUNT(*) FROM \`Order\` WHERE buyerId = u.id) AS buyerOrders,
+          (SELECT COUNT(*) FROM \`Order\` WHERE courierId = u.id) AS courierOrders,
+          (SELECT COUNT(*) FROM \`Product\`) AS products
+        FROM \`User\` u
+        WHERE u.id = ${user.id}
+        LIMIT 1
+      `,
+    );
 
     if (!me) {
       return null;
     }
 
     return {
-      ...me._count,
-      products,
+      addresses: toNumber(me.addresses),
+      sellerListings: toNumber(me.sellerListings),
+      buyerOrders: toNumber(me.buyerOrders),
+      courierOrders: toNumber(me.courierOrders),
+      products: toNumber(me.products),
     };
   });
 }

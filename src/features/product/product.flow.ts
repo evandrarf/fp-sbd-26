@@ -1,6 +1,7 @@
-import { ProductStatus } from "@prisma/client";
+import { Prisma, ProductStatus } from "@prisma/client";
 
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
+import { execute, getLastInsertId, queryFirst, queryMany, toDate, toNumber } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { pause, prompt, promptRequired } from "../../shared/terminal/input";
 import { box, color, divider, hero, menuOption, printScreen, statusBox } from "../../shared/terminal/ui";
@@ -14,6 +15,54 @@ type ProductListItem = {
     listings: number;
   };
 };
+
+type ProductListRow = {
+  id: number;
+  name: string;
+  category: string;
+  status: ProductStatus;
+  listingsCount: number | string | bigint;
+};
+
+type ProductDetailRow = {
+  id: number;
+  name: string;
+  description: string | null;
+  category: string;
+  imageUrl: string | null;
+  status: ProductStatus;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  listingsCount: number | string | bigint;
+};
+
+type ProductMutationRow = {
+  id: number;
+  name: string;
+  description: string | null;
+  category: string;
+  imageUrl: string | null;
+  status: ProductStatus;
+};
+
+type ProductDeleteRow = {
+  id: number;
+  name: string;
+  category: string;
+  listingsCount: number | string | bigint;
+};
+
+function mapProductListItem(row: ProductListRow): ProductListItem {
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    status: row.status,
+    _count: {
+      listings: toNumber(row.listingsCount),
+    },
+  };
+}
 
 function formatStatus(status: ProductStatus) {
   return status === "ACTIVE" ? color("ACTIVE", "green") : color("INACTIVE", "yellow");
@@ -70,23 +119,26 @@ async function chooseStatus(currentStatus?: ProductStatus) {
 }
 
 async function listProducts() {
-  const products = await withDatabaseGuard(() =>
-    prisma.product.findMany({
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      take: 30,
-      select: {
-        id: true,
-        name: true,
-        category: true,
-        status: true,
-        _count: {
-          select: {
-            listings: true,
-          },
-        },
-      },
-    }),
-  );
+  const products = await withDatabaseGuard(async () => {
+    const rows = await queryMany<ProductListRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          p.id,
+          p.name,
+          p.category,
+          p.status,
+          COUNT(l.id) AS listingsCount
+        FROM \`Product\` p
+        LEFT JOIN \`Listing\` l ON l.productId = p.id
+        GROUP BY p.id, p.name, p.category, p.status, p.updatedAt
+        ORDER BY p.updatedAt DESC, p.id DESC
+        LIMIT 30
+      `,
+    );
+
+    return rows.map(mapProductListItem);
+  });
 
   if (products === DB_FAILURE) {
     return;
@@ -114,26 +166,41 @@ async function showProductDetail() {
     return;
   }
 
-  const product = await withDatabaseGuard(() =>
-    prisma.product.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        category: true,
-        imageUrl: true,
-        status: true,
-        createdAt: true,
-        updatedAt: true,
-        _count: {
-          select: {
-            listings: true,
-          },
-        },
+  const product = await withDatabaseGuard(async () => {
+    const row = await queryFirst<ProductDetailRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          p.id,
+          p.name,
+          p.description,
+          p.category,
+          p.imageUrl,
+          p.status,
+          p.createdAt,
+          p.updatedAt,
+          COUNT(l.id) AS listingsCount
+        FROM \`Product\` p
+        LEFT JOIN \`Listing\` l ON l.productId = p.id
+        WHERE p.id = ${id}
+        GROUP BY p.id, p.name, p.description, p.category, p.imageUrl, p.status, p.createdAt, p.updatedAt
+        LIMIT 1
+      `,
+    );
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      ...row,
+      createdAt: toDate(row.createdAt),
+      updatedAt: toDate(row.updatedAt),
+      _count: {
+        listings: toNumber(row.listingsCount),
       },
-    }),
-  );
+    };
+  });
 
   if (product === DB_FAILURE) {
     return;
@@ -186,25 +253,37 @@ async function createProduct() {
   const imageUrl = emptyToNull(await prompt(color("URL gambar: ", "bold")));
   const status = await chooseStatus(ProductStatus.ACTIVE);
 
-  const product = await withDatabaseGuard(() =>
-    prisma.product.create({
-      data: {
-        name,
-        category,
-        description,
-        imageUrl,
-        status,
-      },
-      select: {
-        id: true,
-        name: true,
-        category: true,
-        status: true,
-      },
-    }),
-  );
+  const product = await withDatabaseGuard(async () => {
+    return prisma.$transaction(async (tx) => {
+      await execute(
+        tx,
+        Prisma.sql`
+          INSERT INTO \`Product\` (name, description, category, imageUrl, status, updatedAt)
+          VALUES (${name}, ${description}, ${category}, ${imageUrl}, ${status}, CURRENT_TIMESTAMP(3))
+        `,
+      );
+
+      const insertedId = await getLastInsertId(tx);
+
+      return queryFirst<ProductMutationRow>(
+        tx,
+        Prisma.sql`
+          SELECT id, name, description, category, imageUrl, status
+          FROM \`Product\`
+          WHERE id = ${insertedId}
+          LIMIT 1
+        `,
+      );
+    });
+  });
 
   if (product === DB_FAILURE) {
+    return;
+  }
+
+  if (!product) {
+    printScreen([hero(), statusBox("Produk gagal ditambahkan.", "red")]);
+    await pause();
     return;
   }
 
@@ -232,17 +311,15 @@ async function updateProduct() {
   }
 
   const existing = await withDatabaseGuard(() =>
-    prisma.product.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        category: true,
-        imageUrl: true,
-        status: true,
-      },
-    }),
+    queryFirst<ProductMutationRow>(
+      prisma,
+      Prisma.sql`
+        SELECT id, name, description, category, imageUrl, status
+        FROM \`Product\`
+        WHERE id = ${id}
+        LIMIT 1
+      `,
+    ),
   );
 
   if (existing === DB_FAILURE) {
@@ -275,26 +352,40 @@ async function updateProduct() {
   const imageUrlAnswer = await prompt(color(`URL gambar [${existing.imageUrl ?? "-"}]: `, "bold"));
   const status = await chooseStatus(existing.status);
 
-  const product = await withDatabaseGuard(() =>
-    prisma.product.update({
-      where: { id },
-      data: {
-        name,
-        category,
-        description: descriptionAnswer.trim() ? descriptionAnswer.trim() : existing.description,
-        imageUrl: imageUrlAnswer.trim() ? imageUrlAnswer.trim() : existing.imageUrl,
-        status,
-      },
-      select: {
-        id: true,
-        name: true,
-        category: true,
-        status: true,
-      },
-    }),
-  );
+  const product = await withDatabaseGuard(async () => {
+    await execute(
+      prisma,
+      Prisma.sql`
+        UPDATE \`Product\`
+        SET
+          name = ${name},
+          category = ${category},
+          description = ${descriptionAnswer.trim() ? descriptionAnswer.trim() : existing.description},
+          imageUrl = ${imageUrlAnswer.trim() ? imageUrlAnswer.trim() : existing.imageUrl},
+          status = ${status},
+          updatedAt = CURRENT_TIMESTAMP(3)
+        WHERE id = ${id}
+      `,
+    );
+
+    return queryFirst<ProductMutationRow>(
+      prisma,
+      Prisma.sql`
+        SELECT id, name, description, category, imageUrl, status
+        FROM \`Product\`
+        WHERE id = ${id}
+        LIMIT 1
+      `,
+    );
+  });
 
   if (product === DB_FAILURE) {
+    return;
+  }
+
+  if (!product) {
+    printScreen([hero(), statusBox("Produk gagal diperbarui.", "red")]);
+    await pause();
     return;
   }
 
@@ -321,21 +412,34 @@ async function deleteProduct() {
     return;
   }
 
-  const product = await withDatabaseGuard(() =>
-    prisma.product.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        name: true,
-        category: true,
-        _count: {
-          select: {
-            listings: true,
-          },
-        },
+  const product = await withDatabaseGuard(async () => {
+    const row = await queryFirst<ProductDeleteRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          p.id,
+          p.name,
+          p.category,
+          COUNT(l.id) AS listingsCount
+        FROM \`Product\` p
+        LEFT JOIN \`Listing\` l ON l.productId = p.id
+        WHERE p.id = ${id}
+        GROUP BY p.id, p.name, p.category
+        LIMIT 1
+      `,
+    );
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      ...row,
+      _count: {
+        listings: toNumber(row.listingsCount),
       },
-    }),
-  );
+    };
+  });
 
   if (product === DB_FAILURE) {
     return;
@@ -378,10 +482,13 @@ async function deleteProduct() {
   }
 
   const deleted = await withDatabaseGuard(() =>
-    prisma.product.delete({
-      where: { id },
-      select: { id: true },
-    }),
+    execute(
+      prisma,
+      Prisma.sql`
+        DELETE FROM \`Product\`
+        WHERE id = ${id}
+      `,
+    ),
   );
 
   if (deleted === DB_FAILURE) {

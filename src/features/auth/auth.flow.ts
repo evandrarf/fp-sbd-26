@@ -1,8 +1,9 @@
-import { UserRole } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
 
 import { dashboardFlow } from "../dashboard/dashboard.flow";
 import { ROLE_OPTIONS, roleMenuTone } from "../../shared/auth/roles";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
+import { execute, getLastInsertId, queryFirst, toDate } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { pause, prompt, promptPassword, promptRequired } from "../../shared/terminal/input";
 import { box, color, divider, hero, menuOption, printScreen, roleBadge, statusBox } from "../../shared/terminal/ui";
@@ -41,29 +42,41 @@ async function chooseRole() {
 
 async function createUser(name: string, email: string, password: string, role: UserRole) {
   return withDatabaseGuard(async () => {
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
-      select: { id: true },
-    });
+    const existingUser = await queryFirst<{ id: number }>(
+      prisma,
+      Prisma.sql`
+        SELECT id
+        FROM \`User\`
+        WHERE email = ${email}
+        LIMIT 1
+      `,
+    );
 
     if (existingUser) {
       return "EXISTS" as const;
     }
 
     const hashedPassword = await Bun.password.hash(password);
-    return prisma.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        role,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-      },
+    return prisma.$transaction(async (tx) => {
+      await execute(
+        tx,
+        Prisma.sql`
+          INSERT INTO \`User\` (name, email, password, role, updatedAt)
+          VALUES (${name}, ${email}, ${hashedPassword}, ${role}, CURRENT_TIMESTAMP(3))
+        `,
+      );
+
+      const createdId = await getLastInsertId(tx);
+
+      return queryFirst<{ id: number; name: string; email: string; role: UserRole }>(
+        tx,
+        Prisma.sql`
+          SELECT id, name, email, role
+          FROM \`User\`
+          WHERE id = ${createdId}
+          LIMIT 1
+        `,
+      );
     });
   });
 }
@@ -122,6 +135,12 @@ export async function registerFlow() {
     return;
   }
 
+  if (!created) {
+    printScreen([hero(), statusBox("Gagal menyimpan user baru ke database.", "red")]);
+    await pause();
+    return;
+  }
+
   printScreen([
     hero(),
     box(
@@ -156,17 +175,22 @@ export async function loginFlow() {
   const password = await promptPassword(color("Password: ", "bold"));
 
   const user = await withDatabaseGuard(async () => {
-    const found = await prisma.user.findUnique({
-      where: { email },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        password: true,
-        role: true,
-        createdAt: true,
-      },
-    });
+    const found = await queryFirst<{
+      id: number;
+      name: string;
+      email: string;
+      password: string;
+      role: UserRole;
+      createdAt: Date | string;
+    }>(
+      prisma,
+      Prisma.sql`
+        SELECT id, name, email, password, role, createdAt
+        FROM \`User\`
+        WHERE email = ${email}
+        LIMIT 1
+      `,
+    );
 
     if (!found) {
       return null;
@@ -178,7 +202,10 @@ export async function loginFlow() {
     }
 
     const { password: _, ...sessionUser } = found;
-    return sessionUser;
+    return {
+      ...sessionUser,
+      createdAt: toDate(sessionUser.createdAt),
+    };
   });
 
   if (user === DB_FAILURE) {
