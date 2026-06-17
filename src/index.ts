@@ -2,6 +2,7 @@ import { stdin } from "node:process";
 
 import { loginFlow, registerFlow } from "./features/auth/auth.flow";
 import { renderHomeMenu } from "./features/home/home.screen";
+import { disconnectMongo } from "./shared/db/mongodb";
 import { prisma } from "./shared/db/prisma";
 import { closeInput, pause, prompt } from "./shared/terminal/input";
 import { box, color, hero, printScreen, statusBox } from "./shared/terminal/ui";
@@ -33,6 +34,7 @@ async function main() {
 
 async function shutdown() {
   closeInput();
+  await disconnectMongo();
   await prisma.$disconnect();
 }
 

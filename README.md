@@ -10,10 +10,12 @@ Install dependency:
 bun install
 ```
 
-Buat file `.env` dari nilai berikut atau sesuaikan dengan MySQL lokal:
+Buat file `.env` dari nilai berikut atau sesuaikan dengan MySQL dan MongoDB lokal:
 
 ```env
 DATABASE_URL="mysql://root:password@localhost:3306/jastip_femboy"
+MONGODB_URI="mongodb://127.0.0.1:27017/jastip_femboy"
+MONGODB_DB_NAME="jastip_femboy"
 ```
 
 Generate Prisma Client:
@@ -41,6 +43,7 @@ bun run dev
 - `src/features/dashboard`: dashboard per role setelah login
 - `src/features/home`: tampilan menu utama
 - `src/shared/db`: Prisma client dan database guard
+- `src/features/chat`: chat transaksi buyer-kurir dengan MongoDB dan polling idle
 - `src/shared/terminal`: helper input dan rendering UI terminal
 - `src/shared/auth` dan `src/shared/types`: role metadata dan shared types
 - `prisma/schema.prisma`: schema database MySQL

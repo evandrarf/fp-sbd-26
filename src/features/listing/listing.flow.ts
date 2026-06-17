@@ -1,15 +1,34 @@
-import { ListingStatus } from "@prisma/client";
+import { Prisma, ListingStatus } from "@prisma/client";
+
+import { execute, getLastInsertId, queryFirst, queryMany, toNumber } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { pause, prompt, promptRequired } from "../../shared/terminal/input";
 import { box, color, divider, hero, printScreen, statusBox } from "../../shared/terminal/ui";
 import type { SessionUser } from "../../shared/types/session";
 
+type ProductOptionRow = {
+  id: number;
+  name: string;
+  category: string;
+};
+
+type ListingRow = {
+  id: number;
+  sellerId: number;
+  productId: number;
+  price: number | string | bigint;
+  stock: number;
+  status: ListingStatus;
+  productName: string;
+  productCategory: string;
+};
+
 function formatRupiah(amount: number | string) {
   return new Intl.NumberFormat("id-ID", {
     style: "currency",
     currency: "IDR",
-    maximumFractionDigits: 0
+    maximumFractionDigits: 0,
   }).format(Number(amount));
 }
 
@@ -23,8 +42,8 @@ export async function listingFlow(user: SessionUser) {
         "[1] Lihat Daftar Listing Toko Saya",
         "[2] Tambah Listing Baru (Buka Jastip)",
         "[3] Tambah / Update Stok Listing",
-        "[4] Kembali ke Dashboard"
-      ], { title: "MANAJEMEN LISTING PENJUAL", tone: "pink" })
+        "[4] Kembali ke Dashboard",
+      ], { title: "MANAJEMEN LISTING PENJUAL", tone: "pink" }),
     ]);
 
     const choice = (await prompt(color("Pilih menu listing: ", "bold"))).trim();
@@ -46,19 +65,32 @@ export async function listingFlow(user: SessionUser) {
 
 async function listSellerListings(user: SessionUser) {
   const listings = await withDatabaseGuard(() =>
-    prisma.listing.findMany({
-      where: { sellerId: user.id },
-      include: { product: true },
-      orderBy: { updatedAt: "desc" }
-    })
+    queryMany<ListingRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          l.id,
+          l.sellerId,
+          l.productId,
+          l.price,
+          l.stock,
+          l.status,
+          p.name AS productName,
+          p.category AS productCategory
+        FROM \`Listing\` l
+        INNER JOIN \`Product\` p ON p.id = l.productId
+        WHERE l.sellerId = ${user.id}
+        ORDER BY l.updatedAt DESC
+      `,
+    ),
   );
 
   if (listings === DB_FAILURE) return;
 
   const lines = listings.length
-    ? listings.map((l) =>
-        `[ID Listing: ${l.id}] ${color(l.product.name, "bold")} (${l.product.category})\n` +
-        `      Harga: ${color(formatRupiah(l.price.toString()), "green")} | Stok: ${l.stock} | Status: ${l.status}`
+    ? listings.map((listing) =>
+        `[ID Listing: ${listing.id}] ${color(listing.productName, "bold")} (${listing.productCategory})\n` +
+        `      Harga: ${color(formatRupiah(String(listing.price)), "green")} | Stok: ${listing.stock} | Status: ${listing.status}`,
       )
     : [color("Anda belum membuka listing jastip apa pun.", "yellow")];
 
@@ -67,15 +99,23 @@ async function listSellerListings(user: SessionUser) {
     box([
       color("Daftar jastip yang Anda jual saat ini:", "bold"),
       divider("Listing Saya"),
-      ...lines
-    ], { title: "LISTING TOKO", tone: "pink" })
+      ...lines,
+    ], { title: "LISTING TOKO", tone: "pink" }),
   ]);
   await pause();
 }
 
 async function createListing(user: SessionUser) {
   const products = await withDatabaseGuard(() =>
-    prisma.product.findMany({ where: { status: "ACTIVE" } })
+    queryMany<ProductOptionRow>(
+      prisma,
+      Prisma.sql`
+        SELECT id, name, category
+        FROM \`Product\`
+        WHERE status = ${"ACTIVE"}
+        ORDER BY name ASC, id ASC
+      `,
+    ),
   );
 
   if (products === DB_FAILURE || products.length === 0) {
@@ -84,19 +124,19 @@ async function createListing(user: SessionUser) {
     return;
   }
 
-  const productLines = products.map((p) => `[ID Produk: ${p.id}] ${p.name} (${p.category})`);
+  const productLines = products.map((product) => `[ID Produk: ${product.id}] ${product.name} (${product.category})`);
 
   printScreen([
     hero(),
     box([
       color("Pilih produk global yang ingin Anda titipkan/jual:", "bold"),
       divider("Katalog Produk"),
-      ...productLines
-    ], { title: "BUKA JASTIP BARU", tone: "green" })
+      ...productLines,
+    ], { title: "BUKA JASTIP BARU", tone: "green" }),
   ]);
 
   const productIdRaw = await promptRequired(color("Masukkan ID Produk: ", "bold"), "ID Produk wajib diisi.");
-  const selectedProduct = products.find((p) => p.id === Number(productIdRaw));
+  const selectedProduct = products.find((product) => product.id === Number(productIdRaw));
 
   if (!selectedProduct) {
     printScreen([hero(), statusBox("ID Produk tidak valid.", "red")]);
@@ -116,20 +156,46 @@ async function createListing(user: SessionUser) {
     return;
   }
 
-  const newListing = await withDatabaseGuard(() =>
-    prisma.listing.create({
-      data: {
-        sellerId: user.id,
-        productId: selectedProduct.id,
-        price: price,
-        stock: stock,
-        status: ListingStatus.ACTIVE
-      },
-      include: { product: true }
-    })
-  );
+  const newListing = await withDatabaseGuard(async () => {
+    return prisma.$transaction(async (tx) => {
+      await execute(
+        tx,
+        Prisma.sql`
+          INSERT INTO \`Listing\` (sellerId, productId, price, stock, status, updatedAt)
+          VALUES (${user.id}, ${selectedProduct.id}, ${price}, ${stock}, ${ListingStatus.ACTIVE}, CURRENT_TIMESTAMP(3))
+        `,
+      );
+
+      const insertedId = await getLastInsertId(tx);
+
+      return queryFirst<ListingRow>(
+        tx,
+        Prisma.sql`
+          SELECT
+            l.id,
+            l.sellerId,
+            l.productId,
+            l.price,
+            l.stock,
+            l.status,
+            p.name AS productName,
+            p.category AS productCategory
+          FROM \`Listing\` l
+          INNER JOIN \`Product\` p ON p.id = l.productId
+          WHERE l.id = ${insertedId}
+          LIMIT 1
+        `,
+      );
+    });
+  });
 
   if (newListing === DB_FAILURE) return;
+
+  if (!newListing) {
+    printScreen([hero(), statusBox("Listing baru gagal dibuat.", "red")]);
+    await pause();
+    return;
+  }
 
   printScreen([
     hero(),
@@ -137,10 +203,10 @@ async function createListing(user: SessionUser) {
       color("Listing Jastip Berhasil Dibuka!", "green"),
       "",
       `ID Listing : ${newListing.id}`,
-      `Produk     : ${newListing.product.name}`,
+      `Produk     : ${newListing.productName}`,
       `Harga      : ${formatRupiah(price)}`,
-      `Stok       : ${stock} pcs`
-    ], { title: "SUKSES", tone: "green" })
+      `Stok       : ${stock} pcs`,
+    ], { title: "SUKSES", tone: "green" }),
   ]);
   await pause();
 }
@@ -149,18 +215,32 @@ async function updateListingStock(user: SessionUser) {
   printScreen([
     hero(),
     box([
-      color("Masukkan ID Listing Anda yang ingin diperbarui stoknya.", "bold")
-    ], { title: "UPDATE STOK LISTING", tone: "yellow" })
+      color("Masukkan ID Listing Anda yang ingin diperbarui stoknya.", "bold"),
+    ], { title: "UPDATE STOK LISTING", tone: "yellow" }),
   ]);
 
   const listingIdRaw = await promptRequired(color("Masukkan ID Listing Anda: ", "bold"), "ID Listing wajib diisi.");
   const listingId = Number(listingIdRaw);
 
   const existing = await withDatabaseGuard(() =>
-    prisma.listing.findFirst({
-      where: { id: listingId, sellerId: user.id },
-      include: { product: true }
-    })
+    queryFirst<ListingRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          l.id,
+          l.sellerId,
+          l.productId,
+          l.price,
+          l.stock,
+          l.status,
+          p.name AS productName,
+          p.category AS productCategory
+        FROM \`Listing\` l
+        INNER JOIN \`Product\` p ON p.id = l.productId
+        WHERE l.id = ${listingId} AND l.sellerId = ${user.id}
+        LIMIT 1
+      `,
+    ),
   );
 
   if (existing === DB_FAILURE) return;
@@ -174,11 +254,11 @@ async function updateListingStock(user: SessionUser) {
   printScreen([
     hero(),
     box([
-      `Produk       : ${existing.product.name}`,
+      `Produk       : ${existing.productName}`,
       `Stok Saat Ini: ${existing.stock} pcs`,
       divider("Input Stok Baru"),
-      "Masukkan jumlah total stok baru yang tersedia saat ini."
-    ], { title: "UBAH DATA STOK", tone: "yellow" })
+      "Masukkan jumlah total stok baru yang tersedia saat ini.",
+    ], { title: "UBAH DATA STOK", tone: "yellow" }),
   ]);
 
   const newStockRaw = await promptRequired(color("Masukkan Total Stok Baru: ", "bold"), "Stok wajib diisi.");
@@ -190,15 +270,43 @@ async function updateListingStock(user: SessionUser) {
     return;
   }
 
-  const updated = await withDatabaseGuard(() =>
-    prisma.listing.update({
-      where: { id: listingId },
-      data: { stock: newStock },
-      include: { product: true }
-    })
-  );
+  const updated = await withDatabaseGuard(async () => {
+    await execute(
+      prisma,
+      Prisma.sql`
+        UPDATE \`Listing\`
+        SET stock = ${newStock}, updatedAt = CURRENT_TIMESTAMP(3)
+        WHERE id = ${listingId}
+      `,
+    );
+
+    return queryFirst<ListingRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          l.id,
+          l.sellerId,
+          l.productId,
+          l.price,
+          l.stock,
+          l.status,
+          p.name AS productName,
+          p.category AS productCategory
+        FROM \`Listing\` l
+        INNER JOIN \`Product\` p ON p.id = l.productId
+        WHERE l.id = ${listingId}
+        LIMIT 1
+      `,
+    );
+  });
 
   if (updated === DB_FAILURE) return;
+
+  if (!updated) {
+    printScreen([hero(), statusBox("Stok listing gagal diperbarui.", "red")]);
+    await pause();
+    return;
+  }
 
   printScreen([
     hero(),
@@ -206,9 +314,9 @@ async function updateListingStock(user: SessionUser) {
       color("Stok Listing Berhasil Diperbarui!", "green"),
       "",
       `ID Listing : ${updated.id}`,
-      `Produk     : ${updated.product.name}`,
-      `Stok Baru  : ${updated.stock} pcs`
-    ], { title: "SUKSES DIPERBARUI", tone: "green" })
+      `Produk     : ${updated.productName}`,
+      `Stok Baru  : ${updated.stock} pcs`,
+    ], { title: "SUKSES DIPERBARUI", tone: "green" }),
   ]);
   await pause();
 }

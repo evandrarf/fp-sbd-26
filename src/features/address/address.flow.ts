@@ -1,8 +1,24 @@
+import { Prisma } from "@prisma/client";
+
+import { execute, getLastInsertId, queryFirst, queryMany, toBoolean, toNumber } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { pause, prompt, promptRequired } from "../../shared/terminal/input";
 import { box, color, divider, hero, printScreen, statusBox } from "../../shared/terminal/ui";
 import type { SessionUser } from "../../shared/types/session";
+
+type AddressRow = {
+  id: number;
+  userId: number;
+  label: string;
+  recipientName: string;
+  phoneNumber: string;
+  fullAddress: string;
+  city: string;
+  province: string;
+  postalCode: string;
+  isPrimary: boolean | number;
+};
 
 export async function addressFlow(user: SessionUser) {
   let active = true;
@@ -33,12 +49,22 @@ export async function addressFlow(user: SessionUser) {
 }
 
 async function listAddresses(user: SessionUser) {
-  const addresses = await withDatabaseGuard(() =>
-    prisma.address.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: "desc" }
-    })
-  );
+  const addresses = await withDatabaseGuard(async () => {
+    const rows = await queryMany<AddressRow>(
+      prisma,
+      Prisma.sql`
+        SELECT id, userId, label, recipientName, phoneNumber, fullAddress, city, province, postalCode, isPrimary
+        FROM \`Address\`
+        WHERE userId = ${user.id}
+        ORDER BY createdAt DESC
+      `,
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      isPrimary: toBoolean(row.isPrimary),
+    }));
+  });
 
   if (addresses === DB_FAILURE) return;
 
@@ -84,27 +110,77 @@ async function createAddress(user: SessionUser) {
   const result = await withDatabaseGuard(async () => {
     return prisma.$transaction(async (tx) => {
       if (isPrimary) {
-        await tx.address.updateMany({
-          where: { userId: user.id },
-          data: { isPrimary: false }
-        });
+        await execute(
+          tx,
+          Prisma.sql`
+            UPDATE \`Address\`
+            SET isPrimary = false, updatedAt = CURRENT_TIMESTAMP(3)
+            WHERE userId = ${user.id}
+          `,
+        );
       }
 
-      const totalExisting = await tx.address.count({ where: { userId: user.id } });
+      const totalExisting = await queryFirst<{ total: number | string | bigint }>(
+        tx,
+        Prisma.sql`
+          SELECT COUNT(*) AS total
+          FROM \`Address\`
+          WHERE userId = ${user.id}
+        `,
+      );
 
-      return tx.address.create({
-        data: {
-          userId: user.id,
-          label,
-          recipientName,
-          phoneNumber,
-          fullAddress,
-          city,
-          province,
-          postalCode,
-          isPrimary: totalExisting === 0 ? true : isPrimary
-        }
-      });
+      const finalIsPrimary = (totalExisting ? toNumber(totalExisting.total) : 0) === 0 ? true : isPrimary;
+
+      await execute(
+        tx,
+        Prisma.sql`
+          INSERT INTO \`Address\` (
+            userId,
+            label,
+            recipientName,
+            phoneNumber,
+            fullAddress,
+            city,
+            province,
+            postalCode,
+            isPrimary,
+            updatedAt
+          )
+          VALUES (
+            ${user.id},
+            ${label},
+            ${recipientName},
+            ${phoneNumber},
+            ${fullAddress},
+            ${city},
+            ${province},
+            ${postalCode},
+            ${finalIsPrimary},
+            CURRENT_TIMESTAMP(3)
+          )
+        `,
+      );
+
+      const insertedId = await getLastInsertId(tx);
+
+      const inserted = await queryFirst<AddressRow>(
+        tx,
+        Prisma.sql`
+          SELECT id, userId, label, recipientName, phoneNumber, fullAddress, city, province, postalCode, isPrimary
+          FROM \`Address\`
+          WHERE id = ${insertedId}
+          LIMIT 1
+        `,
+      );
+
+      if (!inserted) {
+        throw new Error("Alamat baru gagal dibaca setelah insert.");
+      }
+
+      return {
+        ...inserted,
+        isPrimary: toBoolean(inserted.isPrimary),
+      };
     });
   });
 

@@ -1,7 +1,19 @@
+import { Prisma } from "@prisma/client";
+
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
+import { execute, getLastInsertId, queryFirst, queryMany } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { pause, prompt, promptRequired } from "../../shared/terminal/input";
 import { box, color, divider, hero, menuOption, printScreen, statusBox } from "../../shared/terminal/ui";
+
+type ReviewRow = {
+  id: number;
+  orderId: number;
+  buyerId: number;
+  rating: number;
+  comment: string | null;
+  buyerName: string | null;
+};
 
 function formatRating(rating: number) {
   const stars = "★".repeat(rating) + "☆".repeat(5 - rating);
@@ -15,14 +27,22 @@ function emptyToNull(value: string) {
 
 async function listFeedbacks() {
   const reviews = await withDatabaseGuard(() =>
-    prisma.review.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 30,
-      include: {
-        buyer: { select: { name: true } },
-        order: { select: { id: true } },
-      },
-    }),
+    queryMany<ReviewRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          r.id,
+          r.orderId,
+          r.buyerId,
+          r.rating,
+          r.comment,
+          u.name AS buyerName
+        FROM \`Review\` r
+        LEFT JOIN \`User\` u ON u.id = r.buyerId
+        ORDER BY r.createdAt DESC
+        LIMIT 30
+      `,
+    ),
   );
 
   if (reviews === DB_FAILURE) return;
@@ -34,11 +54,11 @@ async function listFeedbacks() {
         ? [
             color("Menampilkan ulasan terbaru.", "muted"),
             divider("Daftar Ulasan"),
-            ...reviews.flatMap((r) => [
-              `${color(`[Review #${r.id}]`, "cyan")} ${color(r.buyer?.name || `User #${r.buyerId}`, "bold")} (Order #${r.orderId})`,
-              `Rating : ${formatRating(r.rating)}`,
-              `Komentar: ${r.comment ? color(`"${r.comment}"`, "muted") : "-"}`,
-              "", 
+            ...reviews.flatMap((review) => [
+              `${color(`[Review #${review.id}]`, "cyan")} ${color(review.buyerName || `User #${review.buyerId}`, "bold")} (Order #${review.orderId})`,
+              `Rating : ${formatRating(review.rating)}`,
+              `Komentar: ${review.comment ? color(`"${review.comment}"`, "muted") : "-"}`,
+              "",
             ]),
           ]
         : [color("Belum ada ulasan yang masuk ke Feed.", "yellow")],
@@ -53,7 +73,7 @@ async function chooseRating() {
     const answer = (await prompt(color("Rating (1-5 bintang): ", "bold"))).trim();
     const rating = Number(answer);
     if (Number.isInteger(rating) && rating >= 1 && rating <= 5) return rating;
-    
+
     printScreen([hero(), statusBox("Rating harus berupa angka 1 sampai 5.", "red")]);
     await pause();
   }
@@ -86,7 +106,17 @@ async function createFeedback() {
   const rating = await chooseRating();
   const comment = emptyToNull(await prompt(color("Komentar (Opsional): ", "bold")));
 
-  const existingOrder = await withDatabaseGuard(() => prisma.order.findUnique({ where: { id: orderId } }));
+  const existingOrder = await withDatabaseGuard(() =>
+    queryFirst<{ id: number }>(
+      prisma,
+      Prisma.sql`
+        SELECT id
+        FROM \`Order\`
+        WHERE id = ${orderId}
+        LIMIT 1
+      `,
+    ),
+  );
   if (existingOrder === DB_FAILURE) return;
   if (!existingOrder) {
     printScreen([hero(), statusBox("Order tidak ditemukan. Nggak bisa review pesanan gaib!", "red")]);
@@ -94,7 +124,17 @@ async function createFeedback() {
     return;
   }
 
-  const existingReview = await withDatabaseGuard(() => prisma.review.findUnique({ where: { orderId } }));
+  const existingReview = await withDatabaseGuard(() =>
+    queryFirst<{ id: number }>(
+      prisma,
+      Prisma.sql`
+        SELECT id
+        FROM \`Review\`
+        WHERE orderId = ${orderId}
+        LIMIT 1
+      `,
+    ),
+  );
   if (existingReview === DB_FAILURE) return;
   if (existingReview) {
     printScreen([hero(), statusBox("Order ini sudah pernah di-review sebelumnya!", "yellow")]);
@@ -102,14 +142,44 @@ async function createFeedback() {
     return;
   }
 
-  const newReview = await withDatabaseGuard(() =>
-    prisma.review.create({
-      data: { buyerId, orderId, rating, comment },
-      include: { buyer: { select: { name: true } } },
-    })
-  );
+  const newReview = await withDatabaseGuard(async () => {
+    return prisma.$transaction(async (tx) => {
+      await execute(
+        tx,
+        Prisma.sql`
+          INSERT INTO \`Review\` (buyerId, orderId, rating, comment)
+          VALUES (${buyerId}, ${orderId}, ${rating}, ${comment})
+        `,
+      );
+
+      const insertedId = await getLastInsertId(tx);
+
+      return queryFirst<ReviewRow>(
+        tx,
+        Prisma.sql`
+          SELECT
+            r.id,
+            r.orderId,
+            r.buyerId,
+            r.rating,
+            r.comment,
+            u.name AS buyerName
+          FROM \`Review\` r
+          LEFT JOIN \`User\` u ON u.id = r.buyerId
+          WHERE r.id = ${insertedId}
+          LIMIT 1
+        `,
+      );
+    });
+  });
 
   if (newReview === DB_FAILURE) return;
+
+  if (!newReview) {
+    printScreen([hero(), statusBox("Ulasan gagal disimpan.", "red")]);
+    await pause();
+    return;
+  }
 
   printScreen([
     hero(),
@@ -118,7 +188,7 @@ async function createFeedback() {
         color("Ulasan berhasil masuk ke Feed!", "green"),
         "",
         `ID Review : ${newReview.id}`,
-        `Pembeli   : ${newReview.buyer?.name || buyerId}`,
+        `Pembeli   : ${newReview.buyerName || buyerId}`,
         `Order ID  : ${newReview.orderId}`,
         `Rating    : ${formatRating(newReview.rating)}`,
         `Komentar  : ${newReview.comment || "-"}`,
@@ -141,7 +211,7 @@ export async function feedbackFlow() {
           menuOption("2", "Tambah Ulasan", "Beri rating dan komentar untuk pesanan.", "green"),
           menuOption("3", "Kembali", "Kembali ke dashboard utama.", "muted"),
         ],
-        { title: "MENU FEEDBACK", tone: "blue" }, // <-- Sudah dibenarkan di sini
+        { title: "MENU FEEDBACK", tone: "blue" },
       ),
     ]);
 

@@ -1,15 +1,57 @@
-import { OrderStatus } from "@prisma/client";
+import { Prisma, OrderStatus } from "@prisma/client";
+
+import { buyerChatFlow } from "../chat/chat.flow";
+import { execute, getLastInsertId, queryFirst, queryMany, toBoolean, toDate, toNumber } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { pause, prompt, promptRequired } from "../../shared/terminal/input";
 import { box, color, divider, hero, printScreen, statusBox } from "../../shared/terminal/ui";
 import type { SessionUser } from "../../shared/types/session";
 
+type CheckoutListingRow = {
+  id: number;
+  sellerId: number;
+  productId: number;
+  price: number | string | bigint;
+  stock: number;
+  status: string;
+  productName: string;
+  productCategory: string;
+  sellerName: string;
+};
+
+type AddressRow = {
+  id: number;
+  userId: number;
+  label: string;
+  recipientName: string;
+  phoneNumber: string;
+  fullAddress: string;
+  city: string;
+  isPrimary: boolean | number;
+};
+
+type OrderInsertResult = {
+  id: number;
+};
+
+type OrderHistoryRow = {
+  orderId: number;
+  createdAt: Date | string;
+  status: OrderStatus;
+  totalAmount: number | string | bigint;
+  fullAddress: string;
+  orderItemId: number | null;
+  quantity: number | null;
+  unitPrice: number | string | bigint | null;
+  productName: string | null;
+};
+
 function formatRupiah(amount: number | string) {
   return new Intl.NumberFormat("id-ID", {
     style: "currency",
     currency: "IDR",
-    maximumFractionDigits: 0
+    maximumFractionDigits: 0,
   }).format(Number(amount));
 }
 
@@ -22,8 +64,9 @@ export async function orderFlow(user: SessionUser) {
       box([
         "[1] Lihat Listing & Beli Barang Titipan",
         "[2] Lihat Riwayat Pesanan Saya",
-        "[3] Kembali ke Dashboard"
-      ], { title: "MENU TRANSAKSI PEMBELI", tone: "cyan" })
+        "[3] Chat dengan Kurir",
+        "[4] Kembali ke Dashboard",
+      ], { title: "MENU TRANSAKSI PEMBELI", tone: "cyan" }),
     ]);
 
     const choice = (await prompt(color("Pilih menu transaksi: ", "bold"))).trim();
@@ -33,6 +76,8 @@ export async function orderFlow(user: SessionUser) {
     } else if (choice === "2") {
       await handleOrderHistory(user);
     } else if (choice === "3") {
+      await buyerChatFlow(user);
+    } else if (choice === "4") {
       active = false;
     } else {
       printScreen([hero(), statusBox("Pilihan tidak valid.", "red")]);
@@ -43,10 +88,26 @@ export async function orderFlow(user: SessionUser) {
 
 async function handleCheckout(user: SessionUser) {
   const listings = await withDatabaseGuard(() =>
-    prisma.listing.findMany({
-      where: { status: "ACTIVE", stock: { gt: 0 } },
-      include: { product: true, seller: true }
-    })
+    queryMany<CheckoutListingRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          l.id,
+          l.sellerId,
+          l.productId,
+          l.price,
+          l.stock,
+          l.status,
+          p.name AS productName,
+          p.category AS productCategory,
+          u.name AS sellerName
+        FROM \`Listing\` l
+        INNER JOIN \`Product\` p ON p.id = l.productId
+        INNER JOIN \`User\` u ON u.id = l.sellerId
+        WHERE l.status = ${"ACTIVE"} AND l.stock > 0
+        ORDER BY l.updatedAt DESC, l.id DESC
+      `,
+    ),
   );
 
   if (listings === DB_FAILURE || listings.length === 0) {
@@ -55,9 +116,9 @@ async function handleCheckout(user: SessionUser) {
     return;
   }
 
-  const listingLines = listings.map((l) => 
-    `[ID: ${l.id}] ${color(l.product.name, "bold")} - Penjual: ${l.seller.name}\n` +
-    `      Harga: ${color(formatRupiah(l.price.toString()), "green")} | Stok: ${l.stock} | Kategori: ${l.product.category}`
+  const listingLines = listings.map((listing) =>
+    `[ID: ${listing.id}] ${color(listing.productName, "bold")} - Penjual: ${listing.sellerName}\n` +
+    `      Harga: ${color(formatRupiah(String(listing.price)), "green")} | Stok: ${listing.stock} | Kategori: ${listing.productCategory}`,
   );
 
   printScreen([
@@ -67,14 +128,14 @@ async function handleCheckout(user: SessionUser) {
       divider("Daftar Jastip Aktif"),
       ...listingLines,
       "",
-      color("[0] Batal", "muted")
-    ], { title: "FORM CHECKOUT", tone: "pink" })
+      color("[0] Batal", "muted"),
+    ], { title: "FORM CHECKOUT", tone: "pink" }),
   ]);
 
   const listingIdRaw = await promptRequired(color("Masukkan ID Listing yang ingin dibeli: ", "bold"), "ID Listing wajib diisi.");
   if (listingIdRaw === "0") return;
 
-  const selectedListing = listings.find((l) => l.id === Number(listingIdRaw));
+  const selectedListing = listings.find((listing) => listing.id === Number(listingIdRaw));
   if (!selectedListing) {
     printScreen([hero(), statusBox("ID Listing tidak ditemukan atau tidak aktif.", "red")]);
     await pause();
@@ -90,21 +151,34 @@ async function handleCheckout(user: SessionUser) {
     return;
   }
 
-  const addresses = await withDatabaseGuard(() =>
-    prisma.address.findMany({ where: { userId: user.id } })
-  );
+  const addresses = await withDatabaseGuard(async () => {
+    const rows = await queryMany<AddressRow>(
+      prisma,
+      Prisma.sql`
+        SELECT id, userId, label, recipientName, phoneNumber, fullAddress, city, isPrimary
+        FROM \`Address\`
+        WHERE userId = ${user.id}
+        ORDER BY isPrimary DESC, createdAt DESC
+      `,
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      isPrimary: toBoolean(row.isPrimary),
+    }));
+  });
 
   if (addresses === DB_FAILURE || addresses.length === 0) {
     printScreen([
       hero(),
-      statusBox("Anda belum menyimpan alamat pengiriman. Silakan tambahkan alamat terlebih dahulu melalui database.", "yellow")
+      statusBox("Anda belum menyimpan alamat pengiriman. Silakan tambahkan alamat terlebih dahulu melalui database.", "yellow"),
     ]);
     await pause();
     return;
   }
 
-  const addressLines = addresses.map((a) => 
-    `[ID: ${a.id}] ${color(a.label, "bold")} (${a.recipientName}) - ${a.fullAddress}, ${a.city} ${a.isPrimary ? color("[Utama]", "green") : ""}`
+  const addressLines = addresses.map((address) =>
+    `[ID: ${address.id}] ${color(address.label, "bold")} (${address.recipientName}) - ${address.fullAddress}, ${address.city} ${address.isPrimary ? color("[Utama]", "green") : ""}`,
   );
 
   printScreen([
@@ -112,12 +186,12 @@ async function handleCheckout(user: SessionUser) {
     box([
       color("Pilih alamat pengiriman Anda:", "bold"),
       divider("Alamat Saya"),
-      ...addressLines
-    ], { title: "PILIH ALAMAT", tone: "pink" })
+      ...addressLines,
+    ], { title: "PILIH ALAMAT", tone: "pink" }),
   ]);
 
   const addressIdRaw = await promptRequired(color("Masukkan ID Alamat pengiriman: ", "bold"), "ID Alamat wajib diisi.");
-  const selectedAddress = addresses.find((a) => a.id === Number(addressIdRaw));
+  const selectedAddress = addresses.find((address) => address.id === Number(addressIdRaw));
 
   if (!selectedAddress) {
     printScreen([hero(), statusBox("Alamat tidak valid.", "red")]);
@@ -136,15 +210,15 @@ async function handleCheckout(user: SessionUser) {
     box([
       color("KONFIRMASI PESANAN ANDA", "bold"),
       divider(),
-      `Produk   : ${selectedListing.product.name}`,
+      `Produk   : ${selectedListing.productName}`,
       `Jumlah   : ${quantity} pcs`,
       `Harga    : ${formatRupiah(unitPrice)} / pcs`,
       `Subtotal : ${color(formatRupiah(subtotal), "green")}`,
       `Alamat   : ${selectedAddress.fullAddress}, ${selectedAddress.city}`,
       `Catatan  : ${notes || "-"}`,
       divider(),
-      color("Ketik 'Y' untuk mengonfirmasi pembelian dan membuat pesanan.", "yellow")
-    ], { title: "RINGKASAN CHECKOUT", tone: "yellow" })
+      color("Ketik 'Y' untuk mengonfirmasi pembelian dan membuat pesanan.", "yellow"),
+    ], { title: "RINGKASAN CHECKOUT", tone: "yellow" }),
   ]);
 
   const confirm = (await prompt(color("Konfirmasi (Y/N): ", "bold"))).trim().toUpperCase();
@@ -156,45 +230,54 @@ async function handleCheckout(user: SessionUser) {
 
   const result = await withDatabaseGuard(async () => {
     return prisma.$transaction(async (tx) => {
-      const freshListing = await tx.listing.findUnique({
-        where: { id: selectedListing.id },
-        select: { stock: true }
-      });
+      const freshListing = await queryFirst<{ stock: number | string | bigint }>(
+        tx,
+        Prisma.sql`
+          SELECT stock
+          FROM \`Listing\`
+          WHERE id = ${selectedListing.id}
+          FOR UPDATE
+        `,
+      );
 
-      if (!freshListing || freshListing.stock < quantity) {
-        throw new Error("STOK_HABIS");
+      if (!freshListing || toNumber(freshListing.stock) < quantity) {
+        return "OUT_OF_STOCK" as const;
       }
 
-      await tx.listing.update({
-        where: { id: selectedListing.id },
-        data: { stock: { decrement: quantity } }
-      });
+      await execute(
+        tx,
+        Prisma.sql`
+          UPDATE \`Listing\`
+          SET stock = stock - ${quantity}, updatedAt = CURRENT_TIMESTAMP(3)
+          WHERE id = ${selectedListing.id}
+        `,
+      );
 
-      const newOrder = await tx.order.create({
-        data: {
-          buyerId: user.id,
-          shippingAddressId: selectedAddress.id,
-          status: OrderStatus.PENDING,
-          notes: notes || null,
-          totalAmount: totalAmount,
-          items: {
-            create: {
-              listingId: selectedListing.id,
-              quantity: quantity,
-              unitPrice: unitPrice,
-              subtotal: subtotal
-            }
-          }
-        }
-      });
+      await execute(
+        tx,
+        Prisma.sql`
+          INSERT INTO \`Order\` (buyerId, shippingAddressId, status, notes, totalAmount, updatedAt)
+          VALUES (${user.id}, ${selectedAddress.id}, ${OrderStatus.PENDING}, ${notes || null}, ${totalAmount}, CURRENT_TIMESTAMP(3))
+        `,
+      );
 
-      return newOrder;
+      const orderId = await getLastInsertId(tx);
+
+      await execute(
+        tx,
+        Prisma.sql`
+          INSERT INTO \`OrderItem\` (orderId, listingId, quantity, unitPrice, subtotal)
+          VALUES (${orderId}, ${selectedListing.id}, ${quantity}, ${unitPrice}, ${subtotal})
+        `,
+      );
+
+      return { id: orderId } satisfies OrderInsertResult;
     });
   });
 
   if (result === DB_FAILURE) return;
 
-  if ((result as any) instanceof Error || result === undefined) {
+  if (result === "OUT_OF_STOCK") {
     printScreen([hero(), statusBox("Gagal memproses transaksi. Stok mendadak habis atau berubah.", "red")]);
   } else {
     printScreen([
@@ -202,30 +285,78 @@ async function handleCheckout(user: SessionUser) {
       box([
         color("Transaksi Berhasil Dibuat! 🎉", "green"),
         "",
-        `ID Pesanan   : ${(result as any).id}`,
+        `ID Pesanan   : ${result.id}`,
         `Total Bayar  : ${formatRupiah(totalAmount)}`,
         `Status       : ${color("PENDING (Menunggu Pembayaran)", "yellow")}`,
         "",
         "Pesanan Anda telah dicatat ke database dan menunggu kurir/penjual.",
-      ], { title: "SUKSES", tone: "green" })
+      ], { title: "SUKSES", tone: "green" }),
     ]);
   }
   await pause();
 }
 
 async function handleOrderHistory(user: SessionUser) {
-  const orders = await withDatabaseGuard(() =>
-    prisma.order.findMany({
-      where: { buyerId: user.id },
-      include: {
-        items: {
-          include: { listing: { include: { product: true } } }
-        },
-        shippingAddress: true
-      },
-      orderBy: { createdAt: "desc" }
-    })
-  );
+  const orders = await withDatabaseGuard(async () => {
+    const rows = await queryMany<OrderHistoryRow>(
+      prisma,
+      Prisma.sql`
+        SELECT
+          o.id AS orderId,
+          o.createdAt,
+          o.status,
+          o.totalAmount,
+          a.fullAddress,
+          oi.id AS orderItemId,
+          oi.quantity,
+          oi.unitPrice,
+          p.name AS productName
+        FROM \`Order\` o
+        INNER JOIN \`Address\` a ON a.id = o.shippingAddressId
+        LEFT JOIN \`OrderItem\` oi ON oi.orderId = o.id
+        LEFT JOIN \`Listing\` l ON l.id = oi.listingId
+        LEFT JOIN \`Product\` p ON p.id = l.productId
+        WHERE o.buyerId = ${user.id}
+        ORDER BY o.createdAt DESC, oi.id ASC
+      `,
+    );
+
+    const grouped = new Map<number, {
+      id: number;
+      createdAt: Date;
+      status: OrderStatus;
+      totalAmount: number | string | bigint;
+      shippingAddress: { fullAddress: string };
+      items: Array<{ quantity: number; unitPrice: number | string | bigint; listing: { product: { name: string } } }>;
+    }>();
+
+    for (const row of rows) {
+      const existing = grouped.get(row.orderId) ?? {
+        id: row.orderId,
+        createdAt: toDate(row.createdAt),
+        status: row.status,
+        totalAmount: row.totalAmount,
+        shippingAddress: { fullAddress: row.fullAddress },
+        items: [],
+      };
+
+      if (row.orderItemId !== null && row.quantity !== null && row.unitPrice !== null && row.productName) {
+        existing.items.push({
+          quantity: row.quantity,
+          unitPrice: row.unitPrice,
+          listing: {
+            product: {
+              name: row.productName,
+            },
+          },
+        });
+      }
+
+      grouped.set(row.orderId, existing);
+    }
+
+    return [...grouped.values()];
+  });
 
   if (orders === DB_FAILURE || orders.length === 0) {
     printScreen([hero(), statusBox("Anda belum memiliki riwayat pesanan.", "yellow")]);
@@ -233,18 +364,18 @@ async function handleOrderHistory(user: SessionUser) {
     return;
   }
 
-  const orderLines = orders.flatMap((o) => [
-    `ID: ${o.id} | Tgl: ${o.createdAt.toLocaleDateString("id-ID")} | Status: ${color(o.status, "yellow")} | Total: ${color(formatRupiah(o.totalAmount.toString()), "green")}`,
-    ...o.items.map((i) => `  - ${i.listing.product.name} (${i.quantity} pcs x ${formatRupiah(i.unitPrice.toString())})`),
-    `  Alamat: ${o.shippingAddress.fullAddress}`,
-    color("─".repeat(50), "muted")
+  const orderLines = orders.flatMap((order) => [
+    `ID: ${order.id} | Tgl: ${order.createdAt.toLocaleDateString("id-ID")} | Status: ${color(order.status, "yellow")} | Total: ${color(formatRupiah(String(order.totalAmount)), "green")}`,
+    ...order.items.map((item) => `  - ${item.listing.product.name} (${item.quantity} pcs x ${formatRupiah(String(item.unitPrice))})`),
+    `  Alamat: ${order.shippingAddress.fullAddress}`,
+    color("─".repeat(50), "muted"),
   ]);
 
   printScreen([
     hero(),
     box([
-      ...orderLines
-    ], { title: "RIWAYAT PESANAN SAYA", tone: "blue" })
+      ...orderLines,
+    ], { title: "RIWAYAT PESANAN SAYA", tone: "blue" }),
   ]);
   await pause();
 }
