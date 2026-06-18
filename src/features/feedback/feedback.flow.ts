@@ -1,349 +1,10 @@
-import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
-import { prisma } from "../../shared/db/prisma";
-import { pause, prompt, promptRequired } from "../../shared/terminal/input";
-import { box, color, divider, hero, menuOption, printScreen, statusBox } from "../../shared/terminal/ui";
-import type { SessionUser } from "../../shared/types/session";
-
-function formatRating(rating: number) {
-  const stars = "★".repeat(rating) + "☆".repeat(5 - rating);
-  return rating >= 4 ? color(stars, "green") : rating <= 2 ? color(stars, "red") : color(stars, "yellow");
-}
-
-function emptyToNull(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
-async function listFeedbacks() {
-  const reviews = await withDatabaseGuard(() =>
-    prisma.review.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 30,
-      include: {
-        buyer: { select: { name: true } },
-        order: { select: { id: true } },
-      },
-    })
-  );
-
-  if (reviews === DB_FAILURE) return;
-
-  printScreen([
-    hero(),
-    box(
-      reviews.length
-        ? [
-            color("Menampilkan ulasan terbaru.", "muted"),
-            divider("Daftar Ulasan"),
-            ...reviews.flatMap((r) => [
-              `${color(`[Review #${r.id}]`, "cyan")} ${color(r.buyer?.name || `User #${r.buyerId}`, "bold")} (Order #${r.orderId})`,
-              `Rating : ${formatRating(r.rating)}`,
-              `Komentar: ${r.comment ? color(`"${r.comment}"`, "muted") : "-"}`,
-              ...(r.sellerReply ? [`${color(" ↳ Penjual:", "yellow")} ${r.sellerReply}`] : []),
-              "", 
-            ]),
-          ]
-        : [color("Belum ada ulasan yang masuk ke Feed.", "yellow")],
-      { title: "FEED ULASAN JASTIP", tone: "cyan" },
-    ),
-  ]);
-  await pause();
-}
-
-async function chooseRating() {
-  while (true) {
-    const answer = (await prompt(color("Rating (1-5 bintang): ", "bold"))).trim();
-    const rating = Number(answer);
-    if (Number.isInteger(rating) && rating >= 1 && rating <= 5) return rating;
-    
-    printScreen([hero(), statusBox("Rating harus berupa angka 1 sampai 5.", "red")]);
-    await pause();
-  }
-}
-
-async function createFeedback(user: SessionUser) {
-  const pendingOrders = await withDatabaseGuard(() =>
-    prisma.order.findMany({
-      where: { buyerId: user.id, review: null },
-      orderBy: { createdAt: "desc" },
-    })
-  );
-
-  if (pendingOrders === DB_FAILURE) return;
-
-  if (pendingOrders.length === 0) {
-    printScreen([
-      hero(),
-      statusBox("Kamu belum punya pesanan baru yang bisa di-review.", "yellow"),
-    ]);
-    await pause();
-    return;
-  }
-
-  const orderLines = pendingOrders.map(
-    (o) => `[Order ID: ${color(o.id.toString(), "cyan")}] Tanggal: ${new Intl.DateTimeFormat("id-ID").format(o.createdAt)}`
-  );
-
-  printScreen([
-    hero(),
-    box(
-      [
-        color(`Halo ${user.name}! Pilih pesananmu yang mau diulas.`, "bold"),
-        divider("Daftar Pesanan Belum Diulas"),
-        ...orderLines,
-        divider("Input"),
-      ],
-      { title: "TAMBAH ULASAN", tone: "green" },
-    ),
-  ]);
-
-  const rawOrderId = await promptRequired(color("Masukkan Order ID: ", "bold"), "Order ID wajib diisi.");
-  const orderId = Number(rawOrderId);
-
-  if (isNaN(orderId)) {
-    printScreen([hero(), statusBox("Order ID harus berupa angka!", "red")]);
-    await pause();
-    return;
-  }
-
-  const isValidOrder = pendingOrders.find((o) => o.id === orderId);
-  if (!isValidOrder) {
-    printScreen([hero(), statusBox("Order ID tidak valid, bukan milikmu, atau sudah direview!", "red")]);
-    await pause();
-    return;
-  }
-
-  const rating = await chooseRating();
-  const comment = emptyToNull(await prompt(color("Komentar (Opsional): ", "bold")));
-
-  const newReview = await withDatabaseGuard(() =>
-    prisma.review.create({
-      data: { buyerId: user.id, orderId, rating, comment },
-      include: { buyer: { select: { name: true } } },
-    })
-  );
-
-  if (newReview === DB_FAILURE) return;
-
-  printScreen([
-    hero(),
-    box(
-      [
-        color("Ulasan berhasil masuk ke Feed!", "green"),
-        "",
-        `ID Review : ${newReview.id}`,
-        `Pembeli   : ${newReview.buyer?.name || user.name}`,
-        `Order ID  : ${newReview.orderId}`,
-        `Rating    : ${formatRating(newReview.rating)}`,
-        `Komentar  : ${newReview.comment || "-"}`,
-      ],
-      { title: "ULASAN TERSIMPAN", tone: "green" },
-    ),
-  ]);
-  await pause();
-}
-
-async function editFeedback(user: SessionUser) {
-  const myReviews = await withDatabaseGuard(() =>
-    prisma.review.findMany({
-      where: { buyerId: user.id },
-      orderBy: { createdAt: "desc" },
-    })
-  );
-
-  if (myReviews === DB_FAILURE) return;
-
-  if (myReviews.length === 0) {
-    printScreen([
-      hero(),
-      statusBox("Kamu belum pernah memberikan ulasan apa pun.", "yellow"),
-    ]);
-    await pause();
-    return;
-  }
-
-  const reviewLines = myReviews.map(
-    (r) => `[ID Review: ${color(r.id.toString(), "cyan")}] (Order #${r.orderId}) Rating Lama: ${r.rating} Bintang`
-  );
-
-  printScreen([
-    hero(),
-    box(
-      [
-        color("Pilih ulasan yang ingin kamu edit.", "bold"),
-        divider("Daftar Ulasan Saya"),
-        ...reviewLines,
-        divider("Input"),
-      ],
-      { title: "EDIT ULASAN", tone: "yellow" }
-    ),
-  ]);
-
-  const rawReviewId = await promptRequired(color("Masukkan ID Review yang mau diedit: ", "bold"), "ID Review wajib diisi.");
-  const reviewId = Number(rawReviewId);
-
-  if (isNaN(reviewId)) {
-    printScreen([hero(), statusBox("ID Review harus berupa angka!", "red")]);
-    await pause();
-    return;
-  }
-
-  const reviewToEdit = myReviews.find((r) => r.id === reviewId);
-  if (!reviewToEdit) {
-    printScreen([hero(), statusBox("ID Review tidak valid atau bukan milikmu!", "red")]);
-    await pause();
-    return;
-  }
-
-  printScreen([
-    hero(),
-    box([
-      `Mengedit Review #${reviewId}`,
-      `Rating Sebelumnya  : ${reviewToEdit.rating}`,
-      `Komentar Sebelumnya: ${reviewToEdit.comment || "-"}`,
-    ], { title: "DATA LAMA", tone: "cyan" })
-  ]);
-
-  const newRating = await chooseRating();
-  const newComment = emptyToNull(await prompt(color("Komentar Baru (Opsional): ", "bold")));
-
-  const updatedReview = await withDatabaseGuard(() =>
-    prisma.review.update({
-      where: { id: reviewId },
-      data: { rating: newRating, comment: newComment },
-    })
-  );
-
-  if (updatedReview === DB_FAILURE) return;
-
-  printScreen([hero(), statusBox("Ulasan berhasil diperbarui!", "green")]);
-  await pause();
-}
-
-async function replyFeedback(user: SessionUser) {
-  printScreen([
-    hero(),
-    box([
-      color("Berikan balasan/tanggapan untuk ulasan pembeli.", "bold"),
-      divider("Info"),
-      "Lihat ID Review di menu 'Lihat Feed Ulasan' sebelum membalas."
-    ], { title: "BALAS ULASAN", tone: "yellow" })
-  ]);
-
-  const rawReviewId = await promptRequired(color("Masukkan ID Review yang mau dibalas: ", "bold"), "ID Review wajib diisi.");
-  const reviewId = Number(rawReviewId);
-
-  if (isNaN(reviewId)) {
-    printScreen([hero(), statusBox("ID Review harus berupa angka!", "red")]);
-    await pause();
-    return;
-  }
-
-  const existingReview = await withDatabaseGuard(() =>
-    prisma.review.findUnique({ where: { id: reviewId } })
-  );
-
-  if (existingReview === DB_FAILURE) return;
-
-  if (!existingReview) {
-    printScreen([hero(), statusBox("Ulasan tidak ditemukan!", "red")]);
-    await pause();
-    return;
-  }
-
-  if (existingReview.sellerReply) {
-    printScreen([hero(), statusBox("Ulasan ini sudah pernah dibalas!", "yellow")]);
-    await pause();
-    return;
-  }
-
-  const replyText = await promptRequired(color("Ketik Balasanmu: ", "bold"), "Balasan tidak boleh kosong.");
-
-  const updatedReview = await withDatabaseGuard(() =>
-    prisma.review.update({
-      where: { id: reviewId },
-      data: { sellerReply: replyText }
-    })
-  );
-
-  if (updatedReview === DB_FAILURE) return;
-
-  printScreen([hero(), statusBox("Berhasil membalas ulasan pembeli!", "green")]);
-  await pause();
-}
-
-export async function feedbackFlow(user: SessionUser) {
-  let active = true;
-
-  while (active) {
-    const menuItems = [
-      menuOption("1", "Lihat Feed Ulasan", "Tampilkan daftar ulasan terbaru.", "cyan"),
-    ];
-
-    if (user.role === "SELLER") {
-      menuItems.push(menuOption("2", "Balas Ulasan", "Beri tanggapan pada ulasan pembeli.", "yellow"));
-      menuItems.push(menuOption("3", "Kembali", "Kembali ke dashboard utama.", "muted"));
-    } else if (user.role === "BUYER") {
-      menuItems.push(menuOption("2", "Tambah Ulasan", "Beri rating dan komentar untuk pesanan jastipmu.", "green"));
-      menuItems.push(menuOption("3", "Edit Ulasan", "Ubah rating atau komentar pada ulasan lama.", "yellow"));
-      menuItems.push(menuOption("4", "Kembali", "Kembali ke dashboard utama.", "muted"));
-    } else {
-      menuItems.push(menuOption("2", "Kembali", "Kembali ke dashboard utama.", "muted"));
-    }
-
-    printScreen([
-      hero(),
-      box(menuItems, { title: "MENU FEEDBACK", tone: "blue" }),
-    ]);
-
-    const choice = (await prompt(color("Pilih menu feedback: ", "bold"))).trim();
-
-    switch (choice) {
-      case "1":
-        await listFeedbacks();
-        break;
-      case "2":
-        if (user.role === "SELLER") {
-          await replyFeedback(user);
-        } else if (user.role === "BUYER") {
-          await createFeedback(user);
-        } else {
-          active = false; 
-        }
-        break;
-      case "3":
-        if (user.role === "BUYER") {
-          await editFeedback(user); 
-        } else if (user.role === "SELLER") {
-          active = false; 
-        } else {
-          printScreen([hero(), statusBox("Pilihan menu tidak valid.", "red")]);
-          await pause();
-        }
-        break;
-      case "4":
-        if (user.role === "BUYER") {
-          active = false;
-        } else {
-          printScreen([hero(), statusBox("Pilihan menu tidak valid.", "red")]);
-          await pause();
-        }
-        break;
-      default:
-        printScreen([hero(), statusBox("Pilihan menu tidak valid.", "red")]);
-        await pause();
-        break;
-    }
-  }
-}
-=======
 import { Prisma } from "@prisma/client";
-
 import { DB_FAILURE, withDatabaseGuard } from "../../shared/db/database-guard";
 import { execute, getLastInsertId, queryFirst, queryMany } from "../../shared/db/manual";
 import { prisma } from "../../shared/db/prisma";
 import { pause, prompt, promptRequired } from "../../shared/terminal/input";
 import { box, color, divider, hero, menuOption, printScreen, statusBox } from "../../shared/terminal/ui";
+import type { SessionUser } from "../../shared/types/session";
 
 type ReviewRow = {
   id: number;
@@ -351,6 +12,7 @@ type ReviewRow = {
   buyerId: number;
   rating: number;
   comment: string | null;
+  sellerReply: string | null;
   buyerName: string | null;
 };
 
@@ -369,19 +31,13 @@ async function listFeedbacks() {
     queryMany<ReviewRow>(
       prisma,
       Prisma.sql`
-        SELECT
-          r.id,
-          r.orderId,
-          r.buyerId,
-          r.rating,
-          r.comment,
-          u.name AS buyerName
+        SELECT r.id, r.orderId, r.buyerId, r.rating, r.comment, r.sellerReply, u.name AS buyerName
         FROM \`Review\` r
         LEFT JOIN \`User\` u ON u.id = r.buyerId
         ORDER BY r.createdAt DESC
         LIMIT 30
       `,
-    ),
+    )
   );
 
   if (reviews === DB_FAILURE) return;
@@ -393,10 +49,11 @@ async function listFeedbacks() {
         ? [
             color("Menampilkan ulasan terbaru.", "muted"),
             divider("Daftar Ulasan"),
-            ...reviews.flatMap((review) => [
-              `${color(`[Review #${review.id}]`, "cyan")} ${color(review.buyerName || `User #${review.buyerId}`, "bold")} (Order #${review.orderId})`,
-              `Rating : ${formatRating(review.rating)}`,
-              `Komentar: ${review.comment ? color(`"${review.comment}"`, "muted") : "-"}`,
+            ...reviews.flatMap((r) => [
+              `${color(`[Review #${r.id}]`, "cyan")} ${color(r.buyerName || `User #${r.buyerId}`, "bold")} (Order #${r.orderId})`,
+              `Rating : ${formatRating(r.rating)}`,
+              `Komentar: ${r.comment ? color(`"${r.comment}"`, "muted") : "-"}`,
+              ...(r.sellerReply ? [`${color(" ↳ Penjual:", "yellow")} ${r.sellerReply}`] : []),
               "",
             ]),
           ]
@@ -412,164 +69,163 @@ async function chooseRating() {
     const answer = (await prompt(color("Rating (1-5 bintang): ", "bold"))).trim();
     const rating = Number(answer);
     if (Number.isInteger(rating) && rating >= 1 && rating <= 5) return rating;
-
-    printScreen([hero(), statusBox("Rating harus berupa angka 1 sampai 5.", "red")]);
+    printScreen([hero(), statusBox("Rating harus angka 1-5.", "red")]);
     await pause();
   }
 }
 
-async function createFeedback() {
-  printScreen([
-    hero(),
-    box(
-      [
-        color("Beri ulasan untuk pesanan jastip.", "bold"),
-        divider("Data Ulasan"),
-        "ID Pembeli, ID Pesanan, dan Rating wajib diisi.",
-      ],
-      { title: "TAMBAH ULASAN", tone: "green" },
-    ),
-  ]);
+async function createFeedback(user: SessionUser) {
+  const pendingOrders = await withDatabaseGuard(() =>
+    queryMany<{ id: number; createdAt: Date }>(
+      prisma,
+      Prisma.sql`
+        SELECT o.id, o.createdAt
+        FROM \`Order\` o
+        LEFT JOIN \`Review\` r ON o.id = r.orderId
+        WHERE o.buyerId = ${user.id} AND r.id IS NULL
+        ORDER BY o.createdAt DESC
+      `
+    )
+  );
 
-  const rawBuyerId = await promptRequired(color("ID Pembeli: ", "bold"), "ID Pembeli wajib diisi.");
-  const rawOrderId = await promptRequired(color("ID Pesanan (Order): ", "bold"), "ID Pesanan wajib diisi.");
-  const buyerId = Number(rawBuyerId);
+  if (pendingOrders === DB_FAILURE) return;
+
+  if (pendingOrders.length === 0) {
+    printScreen([hero(), statusBox("Tidak ada pesanan untuk diulas.", "yellow")]);
+    await pause();
+    return;
+  }
+
+  const orderLines = pendingOrders.map((o) => `[ID: ${color(o.id.toString(), "cyan")}] ${new Date(o.createdAt).toLocaleDateString("id-ID")}`);
+  printScreen([hero(), box([color("Pilih Order ID:", "bold"), ...orderLines], { title: "TAMBAH ULASAN", tone: "green" })]);
+  
+  const rawOrderId = await promptRequired(color("Order ID: ", "bold"), "Wajib diisi.");
   const orderId = Number(rawOrderId);
-
-  if (isNaN(buyerId) || isNaN(orderId)) {
-    printScreen([hero(), statusBox("ID harus berupa angka!", "red")]);
+  
+  if (isNaN(orderId) || !pendingOrders.find((o) => o.id === orderId)) {
+    printScreen([hero(), statusBox("ID tidak valid.", "red")]);
     await pause();
     return;
   }
 
   const rating = await chooseRating();
-  const comment = emptyToNull(await prompt(color("Komentar (Opsional): ", "bold")));
-
-  const existingOrder = await withDatabaseGuard(() =>
-    queryFirst<{ id: number }>(
-      prisma,
-      Prisma.sql`
-        SELECT id
-        FROM \`Order\`
-        WHERE id = ${orderId}
-        LIMIT 1
-      `,
-    ),
-  );
-  if (existingOrder === DB_FAILURE) return;
-  if (!existingOrder) {
-    printScreen([hero(), statusBox("Order tidak ditemukan. Nggak bisa review pesanan gaib!", "red")]);
-    await pause();
-    return;
-  }
-
-  const existingReview = await withDatabaseGuard(() =>
-    queryFirst<{ id: number }>(
-      prisma,
-      Prisma.sql`
-        SELECT id
-        FROM \`Review\`
-        WHERE orderId = ${orderId}
-        LIMIT 1
-      `,
-    ),
-  );
-  if (existingReview === DB_FAILURE) return;
-  if (existingReview) {
-    printScreen([hero(), statusBox("Order ini sudah pernah di-review sebelumnya!", "yellow")]);
-    await pause();
-    return;
-  }
-
+  const comment = emptyToNull(await prompt(color("Komentar: ", "bold")));
+  
   const newReview = await withDatabaseGuard(async () => {
     return prisma.$transaction(async (tx) => {
       await execute(
         tx,
         Prisma.sql`
           INSERT INTO \`Review\` (buyerId, orderId, rating, comment)
-          VALUES (${buyerId}, ${orderId}, ${rating}, ${comment})
-        `,
-      );
-
-      const insertedId = await getLastInsertId(tx);
-
-      return queryFirst<ReviewRow>(
-        tx,
-        Prisma.sql`
-          SELECT
-            r.id,
-            r.orderId,
-            r.buyerId,
-            r.rating,
-            r.comment,
-            u.name AS buyerName
-          FROM \`Review\` r
-          LEFT JOIN \`User\` u ON u.id = r.buyerId
-          WHERE r.id = ${insertedId}
-          LIMIT 1
+          VALUES (${user.id}, ${orderId}, ${rating}, ${comment})
         `,
       );
     });
   });
 
   if (newReview === DB_FAILURE) return;
+  
+  printScreen([hero(), statusBox("Ulasan berhasil disimpan!", "green")]);
+  await pause();
+}
 
-  if (!newReview) {
-    printScreen([hero(), statusBox("Ulasan gagal disimpan.", "red")]);
+async function editFeedback(user: SessionUser) {
+  const myReviews = await withDatabaseGuard(() =>
+    queryMany<ReviewRow>(
+      prisma,
+      Prisma.sql`SELECT * FROM \`Review\` WHERE buyerId = ${user.id} ORDER BY createdAt DESC`
+    )
+  );
+  
+  if (myReviews === DB_FAILURE || myReviews.length === 0) {
+    printScreen([hero(), statusBox("Belum ada ulasan untuk diedit.", "yellow")]);
     await pause();
     return;
   }
 
-  printScreen([
-    hero(),
-    box(
-      [
-        color("Ulasan berhasil masuk ke Feed!", "green"),
-        "",
-        `ID Review : ${newReview.id}`,
-        `Pembeli   : ${newReview.buyerName || buyerId}`,
-        `Order ID  : ${newReview.orderId}`,
-        `Rating    : ${formatRating(newReview.rating)}`,
-        `Komentar  : ${newReview.comment || "-"}`,
-      ],
-      { title: "ULASAN TERSIMPAN", tone: "green" },
-    ),
-  ]);
+  const lines = myReviews.map((r) => `[ID: ${r.id}] Rating: ${r.rating} | Komentar: ${r.comment || "-"}`);
+  printScreen([hero(), box([...lines], { title: "EDIT ULASAN SAYA", tone: "yellow" })]);
+  
+  const id = Number(await promptRequired("ID Review: ", "Wajib."));
+  if (!myReviews.find((r) => r.id === id)) {
+    printScreen([hero(), statusBox("ID tidak ditemukan.", "red")]);
+    await pause();
+    return;
+  }
+
+  const rating = await chooseRating();
+  const comment = emptyToNull(await prompt("Komentar Baru: "));
+  
+  await withDatabaseGuard(() =>
+    execute(prisma, Prisma.sql`UPDATE \`Review\` SET rating = ${rating}, comment = ${comment} WHERE id = ${id}`)
+  );
+  
+  printScreen([hero(), statusBox("Berhasil diupdate!", "green")]);
   await pause();
 }
 
-export async function feedbackFlow() {
+async function manageReply(user: SessionUser) {
+  const reviews = await withDatabaseGuard(() =>
+    queryMany<ReviewRow>(
+      prisma,
+      Prisma.sql`
+        SELECT r.id, r.orderId, r.buyerId, r.rating, r.comment, r.sellerReply, u.name AS buyerName
+        FROM \`Review\` r
+        LEFT JOIN \`User\` u ON u.id = r.buyerId
+        ORDER BY r.createdAt DESC
+      `
+    )
+  );
+
+  if (reviews === DB_FAILURE || reviews.length === 0) return;
+  
+  printScreen([
+    hero(), 
+    box(reviews.map(r => `[ID: ${r.id}] Pembeli: ${r.buyerName || r.buyerId} | Reply: ${r.sellerReply || "-"}`), { title: "BALAS/EDIT BALASAN", tone: "yellow" })
+  ]);
+  
+  const id = Number(await promptRequired("Masukkan ID Review: ", "Wajib."));
+  if (!reviews.find(r => r.id === id)) {
+    printScreen([hero(), statusBox("ID tidak ada.", "red")]);
+    await pause();
+    return;
+  }
+
+  const replyText = emptyToNull(await promptRequired("Tulis Balasan/Update: ", "Wajib."));
+  
+  await withDatabaseGuard(() =>
+    execute(prisma, Prisma.sql`UPDATE \`Review\` SET sellerReply = ${replyText} WHERE id = ${id}`)
+  );
+  
+  printScreen([hero(), statusBox("Balasan berhasil disimpan!", "green")]);
+  await pause();
+}
+
+export async function feedbackFlow(user: SessionUser) {
   let active = true;
-
   while (active) {
-    printScreen([
-      hero(),
-      box(
-        [
-          menuOption("1", "Lihat Feed Ulasan", "Tampilkan daftar ulasan pembeli terbaru.", "cyan"),
-          menuOption("2", "Tambah Ulasan", "Beri rating dan komentar untuk pesanan.", "green"),
-          menuOption("3", "Kembali", "Kembali ke dashboard utama.", "muted"),
-        ],
-        { title: "MENU FEEDBACK", tone: "blue" },
-      ),
-    ]);
-
-    const choice = (await prompt(color("Pilih menu feedback: ", "bold"))).trim();
-
+    const menuItems = [menuOption("1", "Lihat Feed", "Lihat ulasan.", "cyan")];
+    if (user.role === "SELLER") menuItems.push(menuOption("2", "Kelola Balasan", "Balas atau edit balasan ulasan.", "yellow"));
+    if (user.role === "BUYER") {
+      menuItems.push(menuOption("2", "Tambah Ulasan", "Bikin ulasan baru.", "green"));
+      menuItems.push(menuOption("3", "Edit Ulasan", "Update ulasanmu.", "yellow"));
+    }
+    menuItems.push(menuOption(user.role === "SELLER" ? "3" : "4", "Kembali", "Kembali.", "muted"));
+    
+    printScreen([hero(), box(menuItems, { title: "FEEDBACK", tone: "blue" })]);
+    const choice = (await prompt("Pilih: ")).trim();
+    
     switch (choice) {
-      case "1":
-        await listFeedbacks();
-        break;
-      case "2":
-        await createFeedback();
+      case "1": await listFeedbacks(); break;
+      case "2": 
+        if (user.role === "SELLER") await manageReply(user);
+        else if (user.role === "BUYER") await createFeedback(user);
         break;
       case "3":
-        active = false;
+        if (user.role === "SELLER") active = false;
+        else if (user.role === "BUYER") await editFeedback(user);
         break;
-      default:
-        printScreen([hero(), statusBox("Pilihan menu tidak valid.", "red")]);
-        await pause();
-        break;
+      case "4": if (user.role === "BUYER") active = false; break;
     }
   }
 }
